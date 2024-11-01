@@ -131,6 +131,14 @@ services:
       retries: 5
       start_period: 5s
     restart: always
+
+  flyway:
+    image: flyway/flyway
+    command: -url=jdbc:postgresql://db/fy3data -schemas=public -user=kitfloppa -password=1234 -connectRetries=60 migrate
+    volumes:
+      - ./sql:/flyway/sql
+    depends_on:
+      - db
   
   minio:
     image: minio/minio

@@ -12,7 +12,7 @@ import pandas as pd
 from pathlib import Path
 from airflow.decorators import task, dag
 
-
+FY3E_START_YEAR = 2020
 DB_NAME = 'fy3data'
 FILES_TABLE = 'iquam_files'
 GET_CURR_FILES = 'get_curr_files.sql'
@@ -24,7 +24,7 @@ def ftp_date_to_datetime(ftp_date: str) -> datetime.datetime:
     """
     """
     
-    return datetime.datetime.strptime(ftp_date[4:], "%Y%m%d%H%M%S")
+    return datetime.datetime.strptime(ftp_date[4:], '%Y%m%d%H%M%S')
 
 @task()
 def get_filenames() -> pd.DataFrame:
@@ -42,8 +42,13 @@ def get_filenames() -> pd.DataFrame:
         ftp.cwd(ftp_connection.directory)
         filenames = list(ftp.nlst())
         created_dates = [ftp_date_to_datetime(ftp.sendcmd('MDTM ' + filename)) for filename in filenames]
+        file_dates = [datetime.datetime.strptime(filename[:6], '%Y%m') for filename in filenames]
     
-    return pd.DataFrame({'filename': filenames, 'created_date': created_dates})
+    return pd.DataFrame({'filename': filenames, 'created_date': created_dates, 'file_date': file_dates})
+
+@task()
+def filter_filenames(filenames: pd.DataFrame) -> pd.DataFrame:
+    return filenames[filenames['file_date'].dt.year >= FY3E_START_YEAR]
 
 @task()
 def update_filenames(filenames: pd.DataFrame) -> None:
@@ -74,15 +79,21 @@ def update_filenames(filenames: pd.DataFrame) -> None:
         update_files.query('created_date_x != created_date_y', inplace=True)
 
         # Add old files
-        with open(Path(ROOT_PATH) / 'sql' / DELETE_ROWS) as q:
-            query = Template(q.read()).substitute(id_on_del=', '.join(update_files['id']))
-        
-        connection.execute(text(query))
+        if not update_files.empty:
+            with open(Path(ROOT_PATH) / 'sql' / DELETE_ROWS) as q:
+                query = Template(q.read()).substitute(id_on_del=', '.join(update_files['id']))
+            
+            connection.execute(text(query))
 
-        update_files.drop(columns=['created_date_x', 'filename_x', 'id', 'status'], axis=1) \
-                    .rename(columns={'filename_y': 'filename', 'created_date_y': 'created_date'})
-        update_files['status'] = FileStatus.NOT_DOWNLOADED
-        update_files.to_sql(FILES_TABLE, connection, if_exists='append', index=False)
+            update_files.drop(columns=['created_date_x',
+                                       'filename_x', 
+                                       'file_date_x', 
+                                       'id', 'status'], axis=1) \
+                        .rename(columns={'filename_y': 'filename', 
+                                         'created_date_y': 'created_date',
+                                         'file_date_y': 'file_date'})
+            update_files['status'] = FileStatus.NOT_DOWNLOADED
+            update_files.to_sql(FILES_TABLE, connection, if_exists='append', index=False)
 
 @dag(
      schedule='0 0 * * *',
@@ -93,5 +104,5 @@ def get_buoys() -> None:
     """
     """
     
-    update_filenames(get_filenames())
+    update_filenames(filter_filenames(get_filenames()))
 get_buoys()
